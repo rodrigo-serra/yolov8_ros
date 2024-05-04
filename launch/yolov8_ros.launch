@@ -1,0 +1,25 @@
+<launch>
+  <arg name="input" default="/camera/color/image_raw" />
+  <!-- <arg name="input" default="/xtion/rgb/image_raw" /> -->
+  <!--<arg name="input" default="/azure/rgb/image_raw" />-->
+  <arg name="img_compressed" default="false" />
+
+  <!-- <arg name="input" default="/camera/color/image_raw/compressed" />
+  <arg name="img_compressed" default="true" /> -->
+
+  <arg name="model" default="yolov8m.pt" />
+  <arg name="device" default="cuda" />
+  <arg name="threshold" default="0.5" />
+  <arg name="node_name" default="yolov8_node" />
+  <arg name="visualization" default="true" />
+
+  <node name="$(arg node_name)"  pkg="yolov8_ros" type="yolov8_ros_node" output="screen" required="false" respawn="false">
+    <param name="input" value="$(arg input)" />
+    <param name="img_compressed" value="$(arg img_compressed)" type="bool"/>
+    <param name="threshold" value="$(arg threshold)" />
+    <param name="model" value="$(arg model)" />
+    <param name="visualization" value="$(arg visualization)" />
+    <param name="model" value="$(arg model)" type="string"/>
+  </node>
+
+</launch>

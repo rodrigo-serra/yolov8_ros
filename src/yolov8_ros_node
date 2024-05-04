@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+import cv2 as cv
+import numpy as np
+import rospy, sys, time, random
+
+from cv_bridge import CvBridge, CvBridgeError
+
+from std_msgs.msg import String
+
+from ultralytics import YOLO
+from ultralytics.engine.results import Results
+from ultralytics.engine.results import Boxes
+from ultralytics.engine.results import Masks
+from ultralytics.engine.results import Keypoints
+from torch import cuda
+
+from sensor_msgs.msg import Image
+from yolov8_ros.msg import Point2D
+from yolov8_ros.msg import BoundingBox2D
+from yolov8_ros.msg import Mask
+from yolov8_ros.msg import KeyPoint2D
+from yolov8_ros.msg import KeyPoint2DArray
+from yolov8_ros.msg import Detection
+from yolov8_ros.msg import DetectionArray
+
+
+class Yolov8Node(object):
+    def __init__(self):
+        rospy.logwarn("Initializing yolov8_node")
+
+        self.cv_bridge = CvBridge()
+        self._last_msg = None
+        self._seq_counter = 0
+        
+        self._currentEvent = "e_start"
+        self._previousEvent = None
+        self.new_image_frame = False
+        self.first_detection = False
+        
+        self.yolo = None
+        self._class_to_color = {}
+        
+        # ROS Params specified in the launch file
+        self.model = self.load_param('~model', 'yolov8m.pt')
+        self.device = self.load_param('~device', 'cuda:0')
+        self.threshold = self.load_param('~threshold', 0.5)
+        # self.enable = self.load_param('~enable', True)
+        # self.reliability = self.load_param('~image_reliability', 2)
+        self.img_topic = self.load_param('~input', '/camera/rgb/image_raw')
+        self._readImgCompressed = rospy.get_param("~img_compressed")
+        
+        self._visualization = self.load_param('~visualization', False)
+        self._event_sub = rospy.Subscriber("~event_in", String, self.eventCallback)
+        
+        # Publishers and Subscribers
+        if self._currentEvent != 'e_start':
+            self.on_activate()
+        
+        self._pub = rospy.Publisher('~detections', DetectionArray, queue_size=10)
+        self._vis_pub = rospy.Publisher('~visualization', Image, queue_size=2)
+        
+        self.start_time = time.time()
+        rospy.logwarn("Initialized")
+
+
+    def on_activate(self):
+        rospy.logwarn("Starting yolov8_node Topics!")
+        self.yolo = YOLO(self.model)
+        self.yolo.fuse()
+        if self._readImgCompressed:
+            self._sub = rospy.Subscriber(self.img_topic, CompressedImage, self.callback_image, queue_size=2)
+        else:
+            self._sub = rospy.Subscriber(self.img_topic, Image, self.callback_image, queue_size=2)
+
+
+    def on_deactivate(self):
+        rospy.logwarn("Stopping yolov8_node Topics!")
+        del self.yolo
+        if 'cuda' in self.device:
+            rospy.logwarn("Clearing CUDA cache")
+            cuda.empty_cache()
+
+        self._previousEvent = self._currentEvent
+        self._currentEvent = None
+        img_msg = None
+        self._last_msg = None
+        self.first_detection = False
+        self._sub.unregister()
+
+
+    def manageEventIn(self):
+        if self._currentEvent == "e_stop" and self._previousEvent != self._currentEvent:
+            self.on_deactivate()
+        
+        if self._currentEvent == "kill" and self._previousEvent != self._currentEvent:
+            rospy.signal_shutdown('Killing yolov8_node as issued by user')
+
+        if self._currentEvent == "e_start" and self._previousEvent != self._currentEvent:
+            self._previousEvent = self._currentEvent
+            self._currentEvent = None
+            self.on_activate()
+
+    def parse_hypothesis(self, results):
+
+        hypothesis_list = []
+
+        # box_data = Boxes()
+        for box_data in results.boxes:
+            hypothesis = {
+                "class_id": int(box_data.cls),
+                "class_name": self.yolo.names[int(box_data.cls)],
+                "score": float(box_data.conf)
+            }
+            hypothesis_list.append(hypothesis)
+
+        return hypothesis_list
+
+
+    def parse_boxes(self, results):
+
+        boxes_list = []
+
+        # box_data = Boxes()
+        for box_data in results.boxes:
+
+            msg = BoundingBox2D()
+
+            # get boxes values
+            box = box_data.xywh[0]
+            msg.center.position.x = float(box[0])
+            msg.center.position.y = float(box[1])
+            msg.size.x = float(box[2])
+            msg.size.y = float(box[3])
+
+            # append msg
+            boxes_list.append(msg)
+
+        return boxes_list
+
+
+    def create_point2d(x, y):
+        p = Point2D()
+        p.x = x
+        p.y = y
+        return p
+
+    def parse_masks(self, results):
+        masks_list = []
+        # mask = Masks()
+        for mask in results.masks:
+            msg = Mask()
+
+            msg.data = [self.create_point2d(float(ele[0]), float(ele[1]))
+                        for ele in mask.xy[0].tolist()]
+            msg.height = results.orig_img.shape[0]
+            msg.width = results.orig_img.shape[1]
+
+            masks_list.append(msg)
+
+        return masks_list
+
+    def parse_keypoints(self, results):
+
+        keypoints_list = []
+
+        # points = Keypoints()
+        for points in results.keypoints:
+
+            msg_array = KeyPoint2DArray()
+
+            if points.conf is None:
+                continue
+
+            for kp_id, (p, conf) in enumerate(zip(points.xy[0], points.conf[0])):
+
+                if conf >= self.threshold:
+                    msg = KeyPoint2D()
+
+                    msg.id = kp_id + 1
+                    msg.point.x = float(p[0])
+                    msg.point.y = float(p[1])
+                    msg.score = float(conf)
+
+                    msg_array.data.append(msg)
+
+            keypoints_list.append(msg_array)
+
+        return keypoints_list
+
+
+    def run(self):
+        rate = rospy.Rate(20)
+        while not rospy.is_shutdown():
+
+            self.manageEventIn()
+
+            if self.new_image_frame:
+                if self._last_msg is not None:
+                    if not self.first_detection:
+                        rospy.loginfo("Detecting images... (this message will not be published again)")
+                        self.first_detection = True
+
+                    # timeStamp = self._last_msg.header.stamp
+                    timeStamp = self._last_msg.header
+                    # frame_id = self._last_msg.header.frame_id
+
+                    if self._readImgCompressed:
+                        cv_image = self.convert_to_cv_image_compressed(self._last_msg)
+                    else:
+                        cv_image = self.convert_to_cv_image(self._last_msg)
+
+                    results = self.yolo.predict(
+                        source=cv_image,
+                        verbose=False,
+                        stream=False,
+                        conf=self.threshold,
+                        device=self.device
+                    )
+
+                    results = results[0].cpu()
+
+                    if results.boxes:
+                        hypothesis = self.parse_hypothesis(results)
+                        boxes = self.parse_boxes(results)
+
+                    if results.masks:
+                        masks = self.parse_masks(results)
+
+                    if results.keypoints:
+                        keypoints = self.parse_keypoints(results)
+
+                    # create detection msgs
+                    detections_msg = DetectionArray()
+                    
+                    for i in range(len(results)):
+
+                        aux_msg = Detection()
+
+                        if results.boxes:
+                            aux_msg.class_id = hypothesis[i]["class_id"]
+                            aux_msg.class_name = hypothesis[i]["class_name"]
+                            aux_msg.score = hypothesis[i]["score"]
+
+                            aux_msg.bbox = boxes[i]
+
+                        if results.masks:
+                            aux_msg.mask = masks[i]
+
+                        if results.keypoints:
+                            aux_msg.keypoints = keypoints[i]
+
+                        detections_msg.detections.append(aux_msg)
+
+                    if detections_msg != None:
+                        # publish detections
+                        # detections_msg.header = timeStamp
+                        self._pub.publish(detections_msg)
+                        if self._visualization:
+                            self.drawDetections(cv_image, detections_msg, timeStamp)
+
+
+
+                    del results
+                    del cv_image
+
+                self._last_msg = None
+                self.new_image_frame = False
+            else:
+                rate.sleep()
+
+    
+    def drawDetections(self, cv_image, detection_msg, timeStamp):
+
+        # cv_image = self.cv_bridge.imgmsg_to_cv2(img_msg)
+        # bb_marker_array = MarkerArray()
+        # kp_marker_array = MarkerArray()
+
+        for detection in detection_msg.detections:
+
+            # random color
+            label = detection.class_name
+
+            if label not in self._class_to_color:
+                r = random.randint(0, 255)
+                g = random.randint(0, 255)
+                b = random.randint(0, 255)
+                self._class_to_color[label] = (r, g, b)
+
+            color = self._class_to_color[label]
+
+            cv_image = self.draw_box(cv_image, detection, color)
+            # cv_image = self.draw_mask(cv_image, detection, color)
+            # cv_image = self.draw_keypoints(cv_image, detection)
+
+            # if detection.bbox3d.frame_id:
+            #     marker = self.create_bb_marker(detection, color)
+            #     marker.header.stamp = img_msg.header.stamp
+            #     marker.id = len(bb_marker_array.markers)
+            #     bb_marker_array.markers.append(marker)
+
+            # if detection.keypoints3d.frame_id:
+            #     for kp in detection.keypoints3d.data:
+            #         marker = self.create_kp_marker(kp)
+            #         marker.header.frame_id = detection.keypoints3d.frame_id
+            #         marker.header.stamp = img_msg.header.stamp
+            #         marker.id = len(kp_marker_array.markers)
+            #         kp_marker_array.markers.append(marker)
+
+        
+        # publish dbg image
+        image_msg = self.cv_bridge.cv2_to_imgmsg(cv_image)
+        image_msg.header.stamp = timeStamp.stamp
+        self._vis_pub.publish(image_msg)
+
+        # self._bb_markers_pub.publish(bb_marker_array)
+        # self._kp_markers_pub.publish(kp_marker_array)
+
+    
+    def draw_box(self, cv_image, detection, color):
+        # get detection info
+        label = detection.class_name
+        score = detection.score
+        box_msg: BoundingBox2D = detection.bbox
+        track_id = detection.id
+
+        min_pt = (round(box_msg.center.position.x - box_msg.size.x / 2.0),
+                  round(box_msg.center.position.y - box_msg.size.y / 2.0))
+        max_pt = (round(box_msg.center.position.x + box_msg.size.x / 2.0),
+                  round(box_msg.center.position.y + box_msg.size.y / 2.0))
+
+        # draw box
+        cv.rectangle(cv_image, min_pt, max_pt, color, 2)
+
+        # write text
+        label = "{} ({}) ({:.3f})".format(label, str(track_id), score)
+        pos = (min_pt[0] + 5, min_pt[1] + 25)
+        font = cv.FONT_HERSHEY_SIMPLEX
+        cv.putText(cv_image, label, pos, font, 1, color, 1, cv.LINE_AA)
+
+        return cv_image
+
+
+    def convert_to_cv_image(self, image_msg):
+
+        if image_msg is None:
+            return None
+
+        self._width = image_msg.width
+        self._height = image_msg.height
+        channels = int(len(image_msg.data) / (self._width * self._height))
+
+        encoding = None
+        if image_msg.encoding.lower() in ['rgb8', 'bgr8', 'bgra8']:
+            encoding = np.uint8
+        elif image_msg.encoding.lower() == 'mono8':
+            encoding = np.uint8
+        elif image_msg.encoding.lower() == '32fc1':
+            encoding = np.float32
+            channels = 1
+
+        cv_img = np.ndarray(shape=(image_msg.height, image_msg.width, channels),
+                            dtype=encoding, buffer=image_msg.data)
+
+        if image_msg.encoding.lower() == 'mono8':
+            cv_img = cv.cvtColor(cv_img, cv.COLOR_RGB2GRAY)
+        elif image_msg.encoding.lower() == 'bgra8':
+            cv_img = cv.cvtColor(cv_img, cv.COLOR_BGRA2BGR)
+        else:
+            cv_img = cv.cvtColor(cv_img, cv.COLOR_RGB2BGR)
+
+        return cv_img
+
+    
+    def convert_to_cv_image_compressed(self, image_msg):
+        try:
+            return self._bridge.compressed_imgmsg_to_cv2(image_msg, "bgr8")
+        except CvBridgeError as e:
+            rospy.logerr(e)
+
+
+    def callback_image(self, msg):
+        rospy.logdebug("Get an image")
+        if not self.new_image_frame:
+            self._last_msg = msg
+            self.new_image_frame = True
+
+
+    def eventCallback(self, data):
+        self._currentEvent = data.data
+
+
+    @staticmethod
+    def load_param(param, default=None):
+        new_param = rospy.get_param(param, default)
+        rospy.loginfo("[Detectron2] %s: %s", param, new_param)
+        return new_param
+
+
+def main(argv):
+    rospy.init_node('yolov8_node')
+    node = Yolov8Node()
+    node.run()
+
+if __name__ == '__main__':
+    main(sys.argv)
