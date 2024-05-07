@@ -12,6 +12,7 @@ from ultralytics.engine.results import Results
 from ultralytics.engine.results import Boxes
 from ultralytics.engine.results import Masks
 from ultralytics.engine.results import Keypoints
+from ultralytics.utils.plotting import Annotator, colors
 from torch import cuda
 
 from sensor_msgs.msg import Image
@@ -42,6 +43,7 @@ class Yolov8Node(object):
         
         # ROS Params specified in the launch file
         self.model = self.load_param('~model', 'yolov8m.pt')
+        self.tracker = self.load_param('~tracker', 'bytetrack.yaml')
         self.device = self.load_param('~device', 'cuda:0')
         self.threshold = self.load_param('~threshold', 0.5)
         # self.enable = self.load_param('~enable', True)
@@ -138,7 +140,7 @@ class Yolov8Node(object):
         return boxes_list
 
 
-    def create_point2d(x, y):
+    def create_point2d(self, x, y):
         p = Point2D()
         p.x = x
         p.y = y
@@ -149,7 +151,7 @@ class Yolov8Node(object):
         # mask = Masks()
         for mask in results.masks:
             msg = Mask()
-
+            
             msg.data = [self.create_point2d(float(ele[0]), float(ele[1]))
                         for ele in mask.xy[0].tolist()]
             msg.height = results.orig_img.shape[0]
@@ -219,6 +221,8 @@ class Yolov8Node(object):
 
                     results = results[0].cpu()
 
+                    tracking_results = self.yolo.track(source=cv_image, tracker=self.tracker, conf=self.threshold)
+                    
                     if results.boxes:
                         hypothesis = self.parse_hypothesis(results)
                         boxes = self.parse_boxes(results)
@@ -258,8 +262,6 @@ class Yolov8Node(object):
                         if self._visualization:
                             self.drawDetections(cv_image, detections_msg, timeStamp)
 
-
-
                     del results
                     del cv_image
 
@@ -289,8 +291,8 @@ class Yolov8Node(object):
             color = self._class_to_color[label]
 
             cv_image = self.draw_box(cv_image, detection, color)
-            # cv_image = self.draw_mask(cv_image, detection, color)
-            # cv_image = self.draw_keypoints(cv_image, detection)
+            cv_image = self.draw_mask(cv_image, detection, color)
+            cv_image = self.draw_keypoints(cv_image, detection)
 
             # if detection.bbox3d.frame_id:
             #     marker = self.create_bb_marker(detection, color)
@@ -320,7 +322,8 @@ class Yolov8Node(object):
         # get detection info
         label = detection.class_name
         score = detection.score
-        box_msg: BoundingBox2D = detection.bbox
+        # box_msg: BoundingBox2D = detection.bbox
+        box_msg = detection.bbox
         track_id = detection.id
 
         min_pt = (round(box_msg.center.position.x - box_msg.size.x / 2.0),
@@ -340,6 +343,52 @@ class Yolov8Node(object):
         return cv_image
 
 
+    def draw_mask(self, cv_image, detection, color):
+
+        mask_msg = detection.mask
+        
+        mask_array = np.array([[int(ele.x), int(ele.y)]for ele in mask_msg.data])
+
+        if mask_msg.data:
+            layer = cv_image.copy()
+            layer = cv.fillPoly(layer, pts=[mask_array], color=color)
+            cv.addWeighted(cv_image, 0.4, layer, 0.6, 0, cv_image)
+            cv_image = cv.polylines(cv_image, [mask_array], isClosed=True, color=color, thickness=2, lineType=cv.LINE_AA)
+
+        return cv_image
+
+    
+    def get_pk_pose(self, kp_id, keypoints_msg):
+        for kp in keypoints_msg.data:
+            if kp.id == kp_id:
+                return (int(kp.point.x), int(kp.point.y))
+        return None
+    
+    
+    def draw_keypoints(self, cv_image, detection):
+
+        keypoints_msg = detection.keypoints
+
+        ann = Annotator(cv_image)
+
+        kp = KeyPoint2D()
+        for kp in keypoints_msg.data:
+            color_k = [int(x) for x in ann.kpt_color[kp.id - 1]] if len(keypoints_msg.data) == 17 else colors(kp.id - 1)
+
+            cv.circle(cv_image, (int(kp.point.x), int(kp.point.y)),5, color_k, -1, lineType=cv.LINE_AA)
+
+        for i, sk in enumerate(ann.skeleton):
+            kp1_pos = self.get_pk_pose(sk[0], keypoints_msg)
+            kp2_pos = self.get_pk_pose(sk[1], keypoints_msg)
+
+            if kp1_pos is not None and kp2_pos is not None:
+                cv.line(cv_image, kp1_pos, kp2_pos, [int(x) for x in ann.limb_color[i]], thickness=2, lineType=cv.LINE_AA)
+
+        return cv_image
+
+
+
+    
     def convert_to_cv_image(self, image_msg):
 
         if image_msg is None:
@@ -392,7 +441,7 @@ class Yolov8Node(object):
     @staticmethod
     def load_param(param, default=None):
         new_param = rospy.get_param(param, default)
-        rospy.loginfo("[Detectron2] %s: %s", param, new_param)
+        rospy.loginfo("[yolov8_node] %s: %s", param, new_param)
         return new_param
 
 

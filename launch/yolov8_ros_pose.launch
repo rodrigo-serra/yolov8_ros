@@ -7,8 +7,7 @@
   <!-- <arg name="input" default="/camera/color/image_raw/compressed" />
   <arg name="img_compressed" default="true" /> -->
 
-  <arg name="model" default="yolov8m.pt" />
-  <arg name="tracker" default="bytetrack.yaml" />
+  <arg name="model" default="yolov8m-pose.pt" />
   <arg name="device" default="cuda" />
   <arg name="threshold" default="0.5" />
   <arg name="node_name" default="yolov8_node" />
