@@ -13,6 +13,7 @@
   <arg name="threshold" default="0.5" />
   <arg name="node_name" default="yolov8_node" />
   <arg name="visualization" default="true" />
+  <arg name="enable_tracking" default="true" />
 
   <node name="$(arg node_name)"  pkg="yolov8_ros" type="yolov8_ros_node" output="screen" required="false" respawn="false">
     <param name="input" value="$(arg input)" />
@@ -20,7 +21,9 @@
     <param name="threshold" value="$(arg threshold)" />
     <param name="model" value="$(arg model)" />
     <param name="visualization" value="$(arg visualization)" />
+    <param name="enable_tracking" value="$(arg enable_tracking)" />
     <param name="model" value="$(arg model)" type="string"/>
+    <param name="tracker" value="$(arg tracker)" type="string"/>
   </node>
 
 </launch>

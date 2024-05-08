@@ -52,9 +52,11 @@ class Yolov8Node(object):
         self._readImgCompressed = rospy.get_param("~img_compressed")
         
         self._visualization = self.load_param('~visualization', False)
-        self._event_sub = rospy.Subscriber("~event_in", String, self.eventCallback)
+        self.enable_tracking = self.load_param('~enable_tracking', False)
         
         # Publishers and Subscribers
+        self._event_sub = rospy.Subscriber("~event_in", String, self.eventCallback)
+        
         if self._currentEvent != 'e_start':
             self.on_activate()
         
@@ -102,17 +104,35 @@ class Yolov8Node(object):
             self._currentEvent = None
             self.on_activate()
 
+
     def parse_hypothesis(self, results):
 
         hypothesis_list = []
 
         # box_data = Boxes()
         for box_data in results.boxes:
-            hypothesis = {
-                "class_id": int(box_data.cls),
-                "class_name": self.yolo.names[int(box_data.cls)],
-                "score": float(box_data.conf)
-            }
+            if self.enable_tracking:
+                if box_data.id != None:
+                    hypothesis = {
+                        "class_id": int(box_data.cls),
+                        "class_name": self.yolo.names[int(box_data.cls)],
+                        "score": float(box_data.conf),
+                        "track_id": str(int(box_data.id))
+                    }
+                else:
+                    hypothesis = {
+                        "class_id": int(box_data.cls),
+                        "class_name": self.yolo.names[int(box_data.cls)],
+                        "score": float(box_data.conf),
+                        "track_id": 'None'
+                    }
+            else:
+                hypothesis = {
+                    "class_id": int(box_data.cls),
+                    "class_name": self.yolo.names[int(box_data.cls)],
+                    "score": float(box_data.conf)
+                }
+            
             hypothesis_list.append(hypothesis)
 
         return hypothesis_list
@@ -211,17 +231,20 @@ class Yolov8Node(object):
                     else:
                         cv_image = self.convert_to_cv_image(self._last_msg)
 
-                    results = self.yolo.predict(
-                        source=cv_image,
-                        verbose=False,
-                        stream=False,
-                        conf=self.threshold,
-                        device=self.device
-                    )
+                    
+                    if self.enable_tracking:
+                        results = self.yolo.track(source=cv_image, tracker=self.tracker, conf=self.threshold, device=self.device)
+                    else:
+                        results = self.yolo.predict(
+                            source=cv_image,
+                            verbose=False,
+                            stream=False,
+                            conf=self.threshold,
+                            device=self.device
+                        )
 
+                    
                     results = results[0].cpu()
-
-                    tracking_results = self.yolo.track(source=cv_image, tracker=self.tracker, conf=self.threshold)
                     
                     if results.boxes:
                         hypothesis = self.parse_hypothesis(results)
@@ -241,6 +264,9 @@ class Yolov8Node(object):
                         aux_msg = Detection()
 
                         if results.boxes:
+                            if self.enable_tracking:
+                                aux_msg.id = hypothesis[i]["track_id"]
+
                             aux_msg.class_id = hypothesis[i]["class_id"]
                             aux_msg.class_name = hypothesis[i]["class_name"]
                             aux_msg.score = hypothesis[i]["score"]
