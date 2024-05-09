@@ -13,7 +13,9 @@
   <arg name="threshold" default="0.5" />
   <arg name="node_name" default="yolov8_node" />
   <arg name="visualization" default="true" />
-  <arg name="enable_tracking" default="true" />
+  <arg name="enable_tracking" default="false" />
+  <arg name="filter_by_class" default="false" />
+  <arg name="classes" default="[person]" />
 
   <node name="$(arg node_name)"  pkg="yolov8_ros" type="yolov8_ros_node" output="screen" required="false" respawn="false">
     <param name="input" value="$(arg input)" />
@@ -24,6 +26,8 @@
     <param name="enable_tracking" value="$(arg enable_tracking)" />
     <param name="model" value="$(arg model)" type="string"/>
     <param name="tracker" value="$(arg tracker)" type="string"/>
+    <param name="filter_by_class" value="$(arg filter_by_class)" type="bool"/>
+    <param name="classes" value="$(arg classes)" type="string"/>
   </node>
 
 </launch>
