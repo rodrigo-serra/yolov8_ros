@@ -13,7 +13,7 @@
   <arg name="threshold" default="0.5" />
   <arg name="node_name" default="yolov8_node" />
   <arg name="visualization" default="true" />
-  <arg name="enable_tracking" default="false" />
+  <arg name="enable_tracking" default="true" />
   <arg name="filter_by_class" default="false" />
   <arg name="classes" default="[person]" />
 

@@ -381,27 +381,54 @@ class Yolov8Node(object):
         # self._kp_markers_pub.publish(kp_marker_array)
 
     
+    # def draw_box(self, cv_image, detection, color):
+    #     # get detection info
+    #     label = detection.class_name
+    #     score = detection.score
+    #     # box_msg: BoundingBox2D = detection.bbox
+    #     box_msg = detection.bbox
+    #     track_id = detection.id
+
+    #     min_pt = (round(box_msg.center.position.x - box_msg.size.x / 2.0),
+    #               round(box_msg.center.position.y - box_msg.size.y / 2.0))
+    #     max_pt = (round(box_msg.center.position.x + box_msg.size.x / 2.0),
+    #               round(box_msg.center.position.y + box_msg.size.y / 2.0))
+
+    #     # draw box
+    #     cv.rectangle(cv_image, min_pt, max_pt, color, 2)
+
+    #     # write text
+    #     label = "{} ({}) ({:.3f})".format(label, str(track_id), score)
+    #     pos = (min_pt[0] + 5, min_pt[1] + 25)
+    #     font = cv.FONT_HERSHEY_SIMPLEX
+    #     cv.putText(cv_image, label, pos, font, 1, color, 1, cv.LINE_AA)
+
+    #     return cv_image
+
+
     def draw_box(self, cv_image, detection, color):
-        # get detection info
+        # Get detection info
         label = detection.class_name
         score = detection.score
-        # box_msg: BoundingBox2D = detection.bbox
         box_msg = detection.bbox
         track_id = detection.id
 
-        min_pt = (round(box_msg.center.position.x - box_msg.size.x / 2.0),
-                  round(box_msg.center.position.y - box_msg.size.y / 2.0))
-        max_pt = (round(box_msg.center.position.x + box_msg.size.x / 2.0),
-                  round(box_msg.center.position.y + box_msg.size.y / 2.0))
+        # Calculate box coordinates
+        top_left = (int(box_msg.center.position.x - box_msg.size.x / 2.0),
+                    int(box_msg.center.position.y - box_msg.size.y / 2.0))
+        bottom_right = (int(box_msg.center.position.x + box_msg.size.x / 2.0),
+                        int(box_msg.center.position.y + box_msg.size.y / 2.0))
 
-        # draw box
-        cv.rectangle(cv_image, min_pt, max_pt, color, 2)
+        # Draw bounding box
+        cv.rectangle(cv_image, top_left, bottom_right, color, 2)
 
-        # write text
-        label = "{} ({}) ({:.3f})".format(label, str(track_id), score)
-        pos = (min_pt[0] + 5, min_pt[1] + 25)
-        font = cv.FONT_HERSHEY_SIMPLEX
-        cv.putText(cv_image, label, pos, font, 1, color, 1, cv.LINE_AA)
+        # Write text
+        text = f"{label} ({track_id}) ({score:.3f})"
+        text_size, _ = cv.getTextSize(text, cv.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+        text_position = (top_left[0], top_left[1] - 10)
+        cv.rectangle(cv_image, (text_position[0], text_position[1] - text_size[1]),
+                    (text_position[0] + text_size[0], text_position[1] + text_size[1]), color, -1)
+        cv.putText(cv_image, text, text_position, cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
         return cv_image
 
