@@ -1,0 +1,5 @@
+<launch>
+  <include file="$(find yolov8_ros)/launch/yolov8_ros.launch">
+      <arg name="model" default="yolov9c.pt" />
+  </include>
+</launch>
